@@ -1,0 +1,160 @@
+#!/bin/bash
+
+############
+# Author: Trent Lawson
+#	20241223
+############
+
+
+# Vars
+######
+HOSTS=${1}
+PORTS=${2}
+REGION=${3}
+BOT_USERAGETNS="appinsights semrushbot ahrefsbot dotbot whatcms rogerbot trendictionbot blexbot linkfluence magpie-crawler mj12bot mediatoolkitbot aspiegelbot domainstatsbot cincraw nimbostratus httrack serpstatbot omgili grapeshotcrawler megaindex petalbot semanticbot cocolyzebot domcopbot traackr bomborabot linguee webtechbot domainstatsbot clickagy sqlmap internet-structure-research-project-bot seekport awariosmartbot onalyticabot buck riddler sbl-bot bvbot sogou barkrowler admantx adbeat embed.ly semantic-visions voluumdsp wc-test-dev-bot gulperbot Amazonbot bigbot"
+
+# Help / usage
+##############
+if [ "${REGION}" == "" ] || [ "${HOSTS}" == "help" ]; then
+	echo "============ Border Patrol ============"
+	echo "./trafficFilter [HOSTS] [PORTS] [BLOCK REGIONS]"
+	echo "./trafficFilter '172.17.12.50 172.17.12.51' '80 443' 'CN IN DE'"
+	echo "============ Border Patrol ============"
+	
+	exit
+fi
+
+# Firewalling
+#############
+iptables -F
+service firewalld stop
+/bin/systemctl disable firewalld.service
+
+# Required pckages
+##################
+yum install -y epel-release
+yum install -y wget make gcc openssl-devel pcre-devel zlib-devel vim mlocate
+
+updatedb &
+
+# Install HAProxy
+##################
+cd /tmp/
+wget https://www.haproxy.org/download/3.1/src/haproxy-3.1.1.tar.gz
+tar zxvf haproxy-3.1.1.tar.gz
+cd haproxy-3.1.1
+
+make TARGET=linux-glibc USE_OPENSSL=1 USE_ZLIB=1 USE_PCRE=1
+make install
+mkdir -p /etc/haproxy /var/lib/haproxy
+##### Build iprange
+cd admin/iprange
+make
+cp iprange /usr/bin/
+cp ip6range /usr/bin/
+cd /tmp
+rm -rf haproxy-3.1*
+
+# Get ipranges
+##############
+cd /etc/haproxy
+wget https://raw.githubusercontent.com/sapics/ip-location-db/refs/heads/main/geo-whois-asn-country/geo-whois-asn-country-ipv4.csv
+cat geo-whois-asn-country-ipv4.csv | sed 's/\([^,]*\),\([^,]*\),\([^,]*\)/"\1","\2","\3"/' > geo-whois-asn-country-ipv4_cleaned.csv
+cat geo-whois-asn-country-ipv4_cleaned.csv | /usr/bin/iprange | sed 's/"//g' | awk -F' ' '{ print $1 >> $2".subnets" }'
+rm -f geo-whois-asn-*
+
+find /etc/certs/Projects/*/*/*.pem > /etc/haproxy/certificates.lst
+echo ${BOT_USERAGETNS} > /etc/haproxy/badbots.txt
+
+echo "
+global
+        chroot          /var/lib/haproxy
+        pidfile         /var/run/haproxy.pid
+        maxconn         20000
+        daemon
+
+stats socket /var/lib/haproxy/stats
+
+
+defaults
+        log         127.0.0.1    local6
+        maxconn                                 20000
+        balance                                 leastconn
+        retries                                 3
+        timeout http-request    10s
+        timeout queue                   1m
+        timeout connect                 10s
+        timeout client                  5m
+        timeout server                  1m
+        timeout http-keep-alive 10s
+        timeout check                   10s
+        mode                                    tcp
+        timeout client                  10800s
+        timeout server                  10800s
+" > /etc/haproxy/haproxy.cfg
+
+for p in ${PORTS}; do
+echo "
+listen http:${p}
+" >> /etc/haproxy/haproxy.cfg
+
+	if [[ "${p}" == *44* ]]; then
+		echo "  bind *:${p} ssl crt-list /etc/haproxy/certificates.lst" >> /etc/haproxy/haproxy.cfg
+	else
+		echo "  bind *:${p}" >> /etc/haproxy/haproxy.cfg
+	fi
+
+	echo '  mode http' >> /etc/haproxy/haproxy.cfg
+	echo '  option httplog' >> /etc/haproxy/haproxy.cfg
+	echo '  option forwardfor' >> /etc/haproxy/haproxy.cfg
+	echo '  acl bad_user_agents hdr_sub(User-Agent) -f /etc/haproxy/badbots.txt' >> /etc/haproxy/haproxy.cfg
+	echo '  http-request deny if bad_user_agents' >> /etc/haproxy/haproxy.cfg
+
+	if [[ "${p}" == *44* ]]; then
+		for s in ${HOSTS}; do
+			echo "  server ${s} ${s}:${p} check ssl verify none" >> /etc/haproxy/haproxy.cfg
+		done
+	else
+		for s in ${HOSTS}; do
+			echo "  server ${s} ${s}:${p} check" >> /etc/haproxy/haproxy.cfg
+		done
+	fi
+
+	for r in ${REGION}; do
+		echo "  acl bad_country src  -f /etc/haproxy/${r}.subnets" >> /etc/haproxy/haproxy.cfg
+	done
+
+
+	echo "  http-request deny if bad_country" >> /etc/haproxy/haproxy.cfg
+	echo ""  >> /etc/haproxy/haproxy.cfg
+done
+
+
+echo "
+listen stats
+	bind *:9000
+	mode http
+	balance
+	timeout client 5000
+	timeout connect 4000
+	timeout server 30000
+	stats uri /haproxy_stats
+	stats realm HAProxy\ Statistics" >> /etc/haproxy/haproxy.cfg
+	
+	
+/usr/local/sbin/haproxy -f /etc/haproxy/haproxy.cfg
+
+
+cat <<'EOF' >> /etc/rc.local
+cd /etc/haproxy
+wget https://raw.githubusercontent.com/sapics/ip-location-db/refs/heads/main/geo-whois-asn-country/geo-whois-asn-country-ipv4.csv
+cat geo-whois-asn-country-ipv4.csv | sed 's/\([^,]*\),\([^,]*\),\([^,]*\)/"\1","\2","\3"/' > geo-whois-asn-country-ipv4_cleaned.csv
+cat geo-whois-asn-country-ipv4_cleaned.csv | /usr/bin/iprange | sed 's/"//g' | awk -F' ' '{ print $1 >> $2".subnets" }'
+rm -f geo-whois-asn-*
+
+find /etc/certs/Projects/*/*/*.pem > /etc/haproxy/certificates.lst
+
+/usr/local/sbin/haproxy -f /etc/haproxy/haproxy.cfg
+EOF
+
+chmod 755 /etc/rc.local

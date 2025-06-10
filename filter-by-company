@@ -1,0 +1,38 @@
+#!/bin/bash
+
+################
+# Trent Lawson
+#	20250305
+################
+
+### Companys to block seperated by |
+#
+COMPANYS="Alibaba|Google"
+#
+### Companys to block seperated by |
+
+# Prep
+######
+mkdir /etc/haproxy/asn
+cd /etc/haproxy/asn
+rm -f fu_company.subnets
+
+# Get data
+##########
+wget https://github.com/sapics/ip-location-db/raw/refs/heads/main/geolite2-asn/geolite2-asn-ipv4.csv
+
+# Find companies we hate
+#########################
+egrep "${COMPANYS}" geolite2-asn-ipv4.csv > geolite2-asn-ipv4_company.csv
+
+# Clean data
+############
+cat geolite2-asn-ipv4_company.csv | sed 's/\([^,]*\),\([^,]*\),\([^,]*\),\([^,]*\)/"\1","\2","\4"/' | sed 's/ /-/g; s/[^a-zA-Z0-9,-."]//g'  > geolite2-asn-ipv4_cleaned.csv
+
+# Format data
+#############
+cat geolite2-asn-ipv4_cleaned.csv| /usr/bin/iprange | sed 's/"//g' | awk -F' ' '{ print $1 >> "fu_company.subnets" }'
+
+# Delete rubbish
+################
+rm -f geolite2-asn-ipv4.csv geolite2-asn-ipv4_cleaned.csv geolite2-asn-ipv4_company.csv
