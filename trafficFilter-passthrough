@@ -15,10 +15,10 @@ REGION=${3}
 # Help / usage
 ##############
 if [ "${REGION}" == "" ] || [ "${HOSTS}" == "help" ]; then
-	echo "============ Border Patrol ============"
+	echo "============ trafficFilter-passthrough ============"
 	echo "./trafficFilter-passthrough [HOSTS] [PORTS] [BLOCK REGIONS]"
 	echo "./trafficFilter-passthrough '172.17.12.50 172.17.12.51' '80 443' 'CN IN DE'"
-	echo "============ Border Patrol ============"
+	echo "============ trafficFilter-passthrough ============"
 	
 	exit
 fi
