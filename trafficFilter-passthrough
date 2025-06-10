@@ -1,0 +1,140 @@
+#!/bin/bash
+
+############
+# Author: Trent Lawson
+#	20241223
+############
+
+
+# Vars
+######
+HOSTS=${1}
+PORTS=${2}
+REGION=${3}
+
+# Help / usage
+##############
+if [ "${REGION}" == "" ] || [ "${HOSTS}" == "help" ]; then
+	echo "============ Border Patrol ============"
+	echo "./trafficFilter-passthrough [HOSTS] [PORTS] [BLOCK REGIONS]"
+	echo "./trafficFilter-passthrough '172.17.12.50 172.17.12.51' '80 443' 'CN IN DE'"
+	echo "============ Border Patrol ============"
+	
+	exit
+fi
+
+# Firewalling
+#############
+iptables -F
+service firewalld stop
+/bin/systemctl disable firewalld.service
+
+# Required pckages
+##################
+yum install -y epel-release
+yum install -y wget make gcc openssl-devel pcre-devel zlib-devel vim mlocate
+
+updatedb &
+
+# Install HAProxy
+##################
+cd /tmp/
+wget https://www.haproxy.org/download/3.1/src/haproxy-3.1.1.tar.gz
+tar zxvf haproxy-3.1.1.tar.gz
+cd haproxy-3.1.1
+
+make TARGET=linux-glibc USE_OPENSSL=1 USE_ZLIB=1 USE_PCRE=1
+make install
+mkdir -p /etc/haproxy /var/lib/haproxy
+##### Build iprange
+cd admin/iprange
+make
+cp iprange /usr/bin/
+cp ip6range /usr/bin/
+cd /tmp
+rm -rf haproxy-3.1*
+
+# Get ipranges
+##############
+cd /etc/haproxy
+wget https://raw.githubusercontent.com/sapics/ip-location-db/refs/heads/main/geo-whois-asn-country/geo-whois-asn-country-ipv4.csv
+cat geo-whois-asn-country-ipv4.csv | sed 's/\([^,]*\),\([^,]*\),\([^,]*\)/"\1","\2","\3"/' > geo-whois-asn-country-ipv4_cleaned.csv
+cat geo-whois-asn-country-ipv4_cleaned.csv | /usr/bin/iprange | sed 's/"//g' | awk -F' ' '{ print $1 >> $2".subnets" }'
+rm -f geo-whois-asn-*
+
+echo "
+global
+        chroot          /var/lib/haproxy
+        pidfile         /var/run/haproxy.pid
+        maxconn         20000
+        daemon
+
+stats socket /var/lib/haproxy/stats
+
+
+defaults
+        log         127.0.0.1    local6
+        maxconn                                 20000
+        balance                                 leastconn
+        retries                                 3
+        timeout http-request    10s
+        timeout queue                   1m
+        timeout connect                 10s
+        timeout client                  5m
+        timeout server                  1m
+        timeout http-keep-alive 10s
+        timeout check                   10s
+        mode                                    tcp
+        timeout client                  10800s
+        timeout server                  10800s
+" > /etc/haproxy/haproxy.cfg
+
+for p in ${PORTS}; do
+echo "
+listen http:${p}
+	bind *:${p}
+	mode tcp
+
+" >> /etc/haproxy/haproxy.cfg
+
+	for s in ${HOSTS}; do
+		echo "  server ${s} ${s}:${p} check" >> /etc/haproxy/haproxy.cfg
+	done
+
+	for r in ${REGION}; do
+		echo "  acl bad_country src  -f /etc/haproxy/${r}.subnets" >> /etc/haproxy/haproxy.cfg
+	done
+
+
+	echo "  tcp-request content reject if bad_country" >> /etc/haproxy/haproxy.cfg
+	echo ""
+done
+
+
+
+echo "
+listen stats
+	bind *:9000
+	mode http
+	balance
+	timeout client 5000
+	timeout connect 4000
+	timeout server 30000
+	stats uri /haproxy_stats
+	stats realm HAProxy\ Statistics" >> /etc/haproxy/haproxy.cfg
+	
+	
+/usr/local/sbin/haproxy -f /etc/haproxy/haproxy.cfg
+
+
+cat <<'EOF' >> /etc/rc.local
+cd /etc/haproxy
+wget https://raw.githubusercontent.com/sapics/ip-location-db/refs/heads/main/geo-whois-asn-country/geo-whois-asn-country-ipv4.csv
+cat geo-whois-asn-country-ipv4.csv | sed 's/\([^,]*\),\([^,]*\),\([^,]*\)/"\1","\2","\3"/' > geo-whois-asn-country-ipv4_cleaned.csv
+cat geo-whois-asn-country-ipv4_cleaned.csv | /usr/bin/iprange | sed 's/"//g' | awk -F' ' '{ print $1 >> $2".subnets" }'
+rm -f geo-whois-asn-*
+
+/usr/local/sbin/haproxy -f /etc/haproxy/haproxy.cfg
+EOF
+
+chmod 755 /etc/rc.local
